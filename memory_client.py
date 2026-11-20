@@ -8,10 +8,10 @@ Used by orchestrator.py, agent_base.py, and any custom agent.
 Install:
     pip install "mcp[cli]" httpx python-dotenv
 """
-import os
 import json
+import os
 from contextlib import AsyncExitStack
-from typing import Any, Dict, List, Optional
+from typing import Any, Self
 
 from dotenv import load_dotenv
 from mcp import ClientSession
@@ -22,7 +22,7 @@ load_dotenv()
 DEFAULT_URL = "https://memory.example.com"
 
 
-def _parse_result(result: Any) -> Dict[str, Any]:
+def _parse_result(result: Any) -> dict[str, Any]:
     """Normalize an MCP CallToolResult into a Python dict."""
     content = getattr(result, "content", None)
     if not content:
@@ -45,16 +45,16 @@ class MemoryClient:
             print(await mem.get_key("k"))
     """
 
-    def __init__(self, server_url: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, server_url: str | None = None, api_key: str | None = None):
         self.server_url = server_url or os.getenv("MCP_SERVER_URL", DEFAULT_URL)
         self.api_key = api_key or os.getenv("MCP_API_KEY")
         self.admin_key = os.getenv("ADMIN_API_KEY")
         if not self.api_key:
             raise RuntimeError("MCP_API_KEY is required")
-        self._session: Optional[ClientSession] = None
-        self._stack: Optional[AsyncExitStack] = None
+        self._session: ClientSession | None = None
+        self._stack: AsyncExitStack | None = None
 
-    async def __aenter__(self) -> "MemoryClient":
+    async def __aenter__(self) -> Self:
         self._stack = AsyncExitStack()
         read, write = await self._stack.enter_async_context(
             sse_client(f"{self.server_url}/sse")
@@ -69,8 +69,8 @@ class MemoryClient:
             self._stack = None
         self._session = None
 
-    async def _call(self, tool: str, arguments: Dict[str, Any],
-                    admin: bool = False) -> Dict[str, Any]:
+    async def _call(self, tool: str, arguments: dict[str, Any],
+                    admin: bool = False) -> dict[str, Any]:
         if not self._session:
             raise RuntimeError("MemoryClient not initialized (use 'async with')")
         key = self.admin_key if admin else self.api_key
@@ -87,12 +87,12 @@ class MemoryClient:
         agent_id: str,
         task_summary: str,
         outcome: str = "success",
-        decisions: Optional[List[Dict]] = None,
-        errors: Optional[List[str]] = None,
-        user_corrections: Optional[List[str]] = None,
-        belief_updates: Optional[List[str]] = None,
-        ttl_seconds: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        decisions: list[dict] | None = None,
+        errors: list[str] | None = None,
+        user_corrections: list[str] | None = None,
+        belief_updates: list[str] | None = None,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
         """Overwrites the session record (server-side behavior). Optional ttl_seconds for auto-expiry."""
         args = {
             "params": {
@@ -110,32 +110,32 @@ class MemoryClient:
             args["params"]["ttlSeconds"] = ttl_seconds
         return await self._call("commit_session", args)
 
-    async def get_session(self, session_id: str) -> Dict[str, Any]:
+    async def get_session(self, session_id: str) -> dict[str, Any]:
         return await self._call("get_session", {"session_id": session_id})
 
-    async def list_sessions(self) -> Dict[str, Any]:
+    async def list_sessions(self) -> dict[str, Any]:
         return await self._call("list_sessions", {})
 
     # ---------- KV tools ----------
 
     async def set_key(self, key: str, value: Any,
-                      ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
-        params: Dict[str, Any] = {"key": key, "value": value}
+                      ttl_seconds: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"key": key, "value": value}
         if ttl_seconds:
             params["ttlSeconds"] = ttl_seconds
         return await self._call("set_key", {"params": params})
 
-    async def get_key(self, key: str) -> Dict[str, Any]:
+    async def get_key(self, key: str) -> dict[str, Any]:
         return await self._call("get_key", {"key": key})
 
-    async def del_key(self, key: str) -> Dict[str, Any]:
+    async def del_key(self, key: str) -> dict[str, Any]:
         return await self._call("del_key", {"key": key})
 
-    async def mget(self, keys: List[str]) -> Dict[str, Any]:
+    async def mget(self, keys: list[str]) -> dict[str, Any]:
         """Batch get values for multiple keys."""
         return await self._call("mget", {"keys": keys})
 
-    async def mset(self, items: Dict[str, Any], ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+    async def mset(self, items: dict[str, Any], ttl_seconds: int | None = None) -> dict[str, Any]:
         """Batch set multiple key-values atomically with optional shared TTL."""
         args = {"items": items}
         if ttl_seconds:
@@ -144,23 +144,23 @@ class MemoryClient:
 
     # ---------- Admin tools ----------
 
-    async def admin_health(self) -> Dict[str, Any]:
+    async def admin_health(self) -> dict[str, Any]:
         return await self._call("admin_health", {}, admin=True)
 
-    async def admin_stats(self) -> Dict[str, Any]:
+    async def admin_stats(self) -> dict[str, Any]:
         return await self._call("admin_stats", {}, admin=True)
 
-    async def admin_keys(self, pattern: str = "session:*") -> Dict[str, Any]:
+    async def admin_keys(self, pattern: str = "session:*") -> dict[str, Any]:
         return await self._call("admin_keys", {"pattern": pattern}, admin=True)
 
-    async def admin_export(self) -> Dict[str, Any]:
+    async def admin_export(self) -> dict[str, Any]:
         return await self._call("admin_export", {}, admin=True)
 
-    async def admin_import(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def admin_import(self, data: dict[str, Any]) -> dict[str, Any]:
         return await self._call("admin_import", {"data": data}, admin=True)
 
-    async def admin_del_keys(self, pattern: str = "session:*") -> Dict[str, Any]:
+    async def admin_del_keys(self, pattern: str = "session:*") -> dict[str, Any]:
         return await self._call("admin_del_keys", {"pattern": pattern}, admin=True)
 
-    async def admin_flush(self, confirm: bool = False) -> Dict[str, Any]:
+    async def admin_flush(self, confirm: bool = False) -> dict[str, Any]:
         return await self._call("admin_flush", {"confirm": confirm}, admin=True)

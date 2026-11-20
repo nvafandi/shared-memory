@@ -8,19 +8,19 @@ Run: python demo_data_layout.py
 """
 import asyncio
 import json
-from typing import Any, Dict, List
+from typing import Any
 
+import agent_base
 import memory_client
 import orchestrator
-import agent_base
 
 
 class FakeMemoryClient:
     """Mirrors real server semantics: commit_session OVERWRITES, KV is global."""
 
     def __init__(self, *a, **kw):
-        self.store: Dict[str, Any] = {}
-        self.sessions: Dict[str, Dict] = {}
+        self.store: dict[str, Any] = {}
+        self.sessions: dict[str, dict] = {}
 
     async def __aenter__(self):
         return self

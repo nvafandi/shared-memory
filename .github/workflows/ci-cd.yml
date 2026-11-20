@@ -5,9 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
-  PROJECT_DIR: ${{ secrets.VPS_PROJECT_DIR || '~/shared-memory' }}
   DOMAIN: memory.nurvan.web.id
 
 jobs:
@@ -50,7 +50,7 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           script: |
             set -euo pipefail
-            cd ${{ env.PROJECT_DIR }}
+            cd "${{ secrets.VPS_PROJECT_DIR }}"
             echo "=== Pull latest code ==="
             git pull origin main
             

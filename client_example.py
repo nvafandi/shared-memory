@@ -2,9 +2,10 @@
 Example Python client accessing MCP Shared-Memory via FastMCP client (SSE over HTTPS).
 Install: pip install "mcp[cli]" httpx python-dotenv
 """
-import os
 import asyncio
 import json
+import os
+
 from dotenv import load_dotenv
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -24,14 +25,13 @@ async def call_tool(tool_name: str, use_admin_key: bool = False, **kwargs):
     if not key:
         raise RuntimeError("API key not available")
     kwargs["api_key"] = key
-    async with sse_client(f"{MCP_URL}/sse") as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, kwargs)
-            # result is list of TextContent, extract text
-            if result and hasattr(result[0], "text"):
-                return json.loads(result[0].text)
-            return {"raw": str(result)}
+    async with sse_client(f"{MCP_URL}/sse") as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool(tool_name, kwargs)
+        # result is list of TextContent, extract text
+        if result and hasattr(result[0], "text"):
+            return json.loads(result[0].text)
+        return {"raw": str(result)}
 
 # ===== Wrapper Functions (Client Tools) =====
 
@@ -50,7 +50,7 @@ async def get_session(session_id: str):
 async def list_sessions():
     return await call_tool("list_sessions")
 
-async def set_key(key: str, value, ttl_seconds: int = None):
+async def set_key(key: str, value, ttl_seconds: int | None = None):
     return await call_tool("set_key", params={"key": key, "value": value, "ttlSeconds": ttl_seconds})
 
 async def get_key(key: str):

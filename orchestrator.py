@@ -18,13 +18,12 @@ Environment:
     MCP_API_KEY     (required)
     ADMIN_API_KEY   (optional, for `export`)
 """
-import os
-import sys
-import json
-import asyncio
 import argparse
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+import asyncio
+import json
+import sys
+from datetime import UTC, datetime
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -36,11 +35,11 @@ AGENT_ORDER = ["analyst", "developer", "tester", "reviewer"]
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def new_session_id(prefix: str = "orch") -> str:
-    return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    return f"{prefix}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
 
 
 class Orchestrator:
@@ -55,11 +54,11 @@ class Orchestrator:
         self.memory = memory
         self.session_id = session_id
         self.log_key = f"orch:{session_id}:log"
-        self.history: List[Dict[str, Any]] = []
+        self.history: list[dict[str, Any]] = []
 
     # ---------- internal ----------
 
-    async def _append(self, entry: Dict[str, Any]) -> None:
+    async def _append(self, entry: dict[str, Any]) -> None:
         entry["at"] = now_iso()
         self.history.append(entry)
         # Persist rolling history (KV), then mirror summary into session record.
@@ -146,7 +145,7 @@ class Orchestrator:
             "outcome": outcome,
         })
 
-    async def restore(self) -> List[Dict[str, Any]]:
+    async def restore(self) -> list[dict[str, Any]]:
         """Reload history if the session is resumed later."""
         res = await self.memory.get_key(self.log_key)
         if "error" in res:
@@ -156,13 +155,13 @@ class Orchestrator:
             self.history = value
         return self.history
 
-    async def collect_agent_logs(self, agents: List[str]) -> List[Dict[str, Any]]:
+    async def collect_agent_logs(self, agents: list[str]) -> list[dict[str, Any]]:
         """Merge every agent's rolling log into one chronological trail.
 
         Agents log to `agent:<id>:<session>:log` because `commit_session`
         overwrites the shared record; merging here reconstructs full history.
         """
-        merged: List[Dict[str, Any]] = []
+        merged: list[dict[str, Any]] = []
         for agent in agents:
             res = await self.memory.get_key(f"agent:{agent}:{self.session_id}:log")
             entries = res.get("value") if "error" not in res else None
@@ -171,17 +170,17 @@ class Orchestrator:
         merged.sort(key=lambda e: e.get("at", ""))
         return merged
 
-    async def write_consolidated(self, agents: List[str]) -> None:
+    async def write_consolidated(self, agents: list[str]) -> None:
         """Persist the merged trail so a single session record holds everything.
 
         The final `outcome` comes from the orchestrator's own finish entry —
         never from the last agent entry, which may be an earlier success.
         """
         merged = await self.collect_agent_logs(agents)
-        decisions: List[Dict[str, str]] = []
-        errors: List[str] = []
-        corrections: List[str] = []
-        beliefs: List[str] = []
+        decisions: list[dict[str, str]] = []
+        errors: list[str] = []
+        corrections: list[str] = []
+        beliefs: list[str] = []
         for entry in merged:
             for d in entry.get("decisions", []):
                 if isinstance(d, dict) and d not in decisions:
@@ -308,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.cmd == "run":

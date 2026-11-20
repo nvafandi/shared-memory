@@ -6,12 +6,11 @@ No network / server required.
 Run:  python test_orchestrator_offline.py
 """
 import asyncio
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+import agent_base
 import memory_client
 import orchestrator
-import agent_base
 
 
 class FakeMemoryClient:
@@ -21,9 +20,9 @@ class FakeMemoryClient:
     """
 
     def __init__(self, *a, **kw):
-        self.store: Dict[str, Any] = {}
-        self.sessions: Dict[str, Dict] = {}
-        self.calls: List[str] = []
+        self.store: dict[str, Any] = {}
+        self.sessions: dict[str, dict] = {}
+        self.calls: list[str] = []
 
     async def __aenter__(self):
         return self

@@ -3,15 +3,15 @@ MCP Shared-Memory Server
 Expose tools: commit_session, get_session, list_sessions, set_key, get_key, del_key
 Plus admin tools: health, stats, keys, flush, export, import
 """
-import os
 import json
-from typing import Any, Optional
-from datetime import datetime
+import os
+from datetime import UTC, datetime
+from typing import Any
 
-from fastmcp import FastMCP
-from pydantic import BaseModel, Field
 import redis.asyncio as redis
 from dotenv import load_dotenv
+from fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -29,7 +29,7 @@ class SessionRecord(BaseModel):
     errors: list[str] = Field(default_factory=list)
     userCorrections: list[str] = Field(default_factory=list)
     beliefUpdates: list[str] = Field(default_factory=list)
-    updatedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    updatedAt: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 class CommitSessionParams(BaseModel):
     sessionId: str
@@ -40,18 +40,18 @@ class CommitSessionParams(BaseModel):
     errors: list[str] = Field(default_factory=list)
     userCorrections: list[str] = Field(default_factory=list)
     beliefUpdates: list[str] = Field(default_factory=list)
-    ttlSeconds: Optional[int] = None
+    ttlSeconds: int | None = None
 
 class SetKeyParams(BaseModel):
     key: str
     value: Any
-    ttlSeconds: Optional[int] = None
+    ttlSeconds: int | None = None
 
 # ---- Redis Client ----
 class RedisClient:
     def __init__(self, url: str):
         self._url = url
-        self._client: Optional[redis.Redis] = None
+        self._client: redis.Redis | None = None
 
     async def connect(self):
         if self._client is None:
@@ -169,7 +169,7 @@ async def mget(keys: list[str], api_key: str = "") -> dict:
     return {"values": out}
 
 @mcp.tool()
-async def mset(items: dict[str, Any], ttlSeconds: Optional[int] = None, api_key: str = "") -> dict:
+async def mset(items: dict[str, Any], ttlSeconds: int | None = None, api_key: str = "") -> dict:
     """Batch set multiple key-values atomically (optional shared ttlSeconds)."""
     if not verify_api_key(api_key):
         return {"error": "unauthorized"}
@@ -257,7 +257,6 @@ async def admin_export(api_key: str = "") -> dict:
     """Export semua session ke JSON."""
     if not verify_api_key(api_key, require_admin=True):
         return {"error": "admin unauthorized"}
-    client = await rc.connect()
     sessions = await list_sessions(api_key)
     data = {}
     for sid in sessions.get("sessions", []):
@@ -288,7 +287,7 @@ class XApiKeyMiddleware:
        - get_key / del_key / get_session / list_sessions / admin_*: unwrap {"params": ...}
     """
 
-    WRAPPED_TOOLS = {"set_key", "commit_session"}
+    WRAPPED_TOOLS = ("set_key", "commit_session")
 
     def __init__(self, app):
         self.app = app
@@ -350,9 +349,8 @@ class XApiKeyMiddleware:
 
 if __name__ == "__main__":
     import uvicorn
-    from starlette.responses import JSONResponse, PlainTextResponse
     from starlette.middleware import Middleware
-    from starlette.routing import Route
+    from starlette.responses import JSONResponse, PlainTextResponse
 
     METRICS_HELP = """# HELP mcp_tool_calls_total Total tool calls
 # TYPE mcp_tool_calls_total counter

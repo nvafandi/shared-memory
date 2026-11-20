@@ -12,28 +12,28 @@ Environment:
     MCP_SERVER_URL  (required)
     MCP_API_KEY     (required)
 """
-import sys
 import asyncio
 import json
+import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from memory_client import MemoryClient
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
 class AgentResult:
     success: bool
     output: str
-    decisions: List[Dict[str, str]] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    corrections: List[str] = field(default_factory=list)
-    beliefs: List[str] = field(default_factory=list)
+    decisions: list[dict[str, str]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    corrections: list[str] = field(default_factory=list)
+    beliefs: list[str] = field(default_factory=list)
 
 
 class BaseAgent:
@@ -62,7 +62,7 @@ class BaseAgent:
         """
         return f"agent:{self.agent_id}:{self.session_id}:log"
 
-    async def _append_log(self, entry: Dict[str, Any]) -> None:
+    async def _append_log(self, entry: dict[str, Any]) -> None:
         res = await self.memory.get_key(self._log_key())
         history = res.get("value") if "error" not in res else []
         if not isinstance(history, list):
@@ -75,10 +75,10 @@ class BaseAgent:
         self,
         summary: str,
         outcome: str = "success",
-        decisions: Optional[List[Dict]] = None,
-        errors: Optional[List[str]] = None,
-        corrections: Optional[List[str]] = None,
-        beliefs: Optional[List[str]] = None,
+        decisions: list[dict] | None = None,
+        errors: list[str] | None = None,
+        corrections: list[str] | None = None,
+        beliefs: list[str] | None = None,
     ) -> None:
         # 1. Append to our own rolling log so nothing is lost.
         await self._append_log({
@@ -102,7 +102,7 @@ class BaseAgent:
         )
 
     async def save_state(self, key: str, value: Any,
-                         ttl_seconds: Optional[int] = None) -> None:
+                         ttl_seconds: int | None = None) -> None:
         await self.memory.set_key(self._state_key(key), value, ttl_seconds)
 
     async def load_state(self, key: str) -> Any:
@@ -111,11 +111,11 @@ class BaseAgent:
 
     # ---------- batch KV helpers ----------
 
-    async def mget(self, keys: List[str]) -> Dict[str, Any]:
+    async def mget(self, keys: list[str]) -> dict[str, Any]:
         """Batch get values for multiple keys."""
         return await self.memory.mget(keys)
 
-    async def mset(self, items: Dict[str, Any], ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+    async def mset(self, items: dict[str, Any], ttl_seconds: int | None = None) -> dict[str, Any]:
         """Batch set multiple key-values atomically with optional shared TTL."""
         return await self.memory.mset(items, ttl_seconds)
 
@@ -222,7 +222,7 @@ class ReviewerAgent(BaseAgent):
         )
 
 
-AGENT_MAP: Dict[str, type[BaseAgent]] = {
+AGENT_MAP: dict[str, type[BaseAgent]] = {
     "analyst": AnalystAgent,
     "developer": DeveloperAgent,
     "tester": TesterAgent,
@@ -239,7 +239,7 @@ async def run_agent(agent_name: str, session_id: str, task: str) -> AgentResult:
         return await cls(mem, session_id).run(task)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     if len(argv) < 3:
         print("Usage: python agent_base.py <agent> <session_id> <task>")
