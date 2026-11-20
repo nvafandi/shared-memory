@@ -1,0 +1,40 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - mcp-net
+
+  mcp-server:
+    build: .
+    container_name: mcp-shared-memory
+    ports:
+      - "127.0.0.1:8000:8000"   # hanya localhost, Nginx yang proxies
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - MCP_TRANSPORT=sse
+      - MCP_API_KEY=${MCP_API_KEY}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mcp-net
+    restart: unless-stopped
+
+networks:
+  mcp-net:
+
+volumes:
+  redis_data:

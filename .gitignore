@@ -1,0 +1,30 @@
+# Secrets & local env
+.env
+.env.local
+.env.*.local
+
+# TLS / certs
+*.pem
+*.key
+*.crt
+*.p12
+
+# Backups / dumps (may contain agent session data)
+backup*.json
+export*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+data/
+*.log

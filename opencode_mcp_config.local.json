@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "shared-memory": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "http://localhost:8000/sse",
+        "--header",
+        "x-api-key: ${MCP_API_KEY}"
+      ],
+      "env": {
+        "MCP_API_KEY": "<your-local-api-key>"
+      }
+    }
+  }
+}

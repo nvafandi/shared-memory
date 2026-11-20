@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "shared-memory": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://memory.example.com/sse",
+        "--header",
+        "x-api-key: ${MCP_API_KEY}"
+      ],
+      "env": {
+        "MCP_API_KEY": "<your-api-key>"
+      }
+    }
+  }
+}

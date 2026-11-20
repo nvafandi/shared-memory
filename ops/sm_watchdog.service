@@ -1,0 +1,6 @@
+[Unit]
+Description=Watchdog MCP shared-memory (memory.example.com)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sm-watchdog.sh
