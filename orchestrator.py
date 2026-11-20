@@ -60,17 +60,17 @@ class Orchestrator:
     async def _append(self, entry: dict[str, Any]) -> None:
         entry["at"] = now_iso()
         self.history.append(entry)
-        # Persist rolling history (KV), then mirror summary into session record.
+        # Persist rolling history (KV only). Session record is synced once at finish().
         await self.memory.set_key(self.log_key, self.history)
-        await self._sync_session_record()
 
     async def _sync_session_record(self) -> None:
-        last = self.history[-1] if self.history else {}
+        """Sync consolidated session record from accumulated history."""
         decisions = [
             {"summary": e["summary"], "rationale": e.get("rationale", "")}
             for e in self.history if e.get("kind") == "decision"
         ]
         errors = [e["summary"] for e in self.history if e.get("kind") == "error"]
+        last = self.history[-1] if self.history else {}
         await self.memory.commit_session(
             session_id=self.session_id,
             agent_id=last.get("agent", "orchestrator"),

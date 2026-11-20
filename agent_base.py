@@ -62,6 +62,7 @@ class BaseAgent:
         return f"agent:{self.agent_id}:{self.session_id}:log"
 
     async def _append_log(self, entry: dict[str, Any]) -> None:
+        """Append to rolling log (read-modify-write). Note: minor race condition if concurrent agents on same session."""
         res = await self.memory.get_key(self._log_key())
         history = res.get("value") if "error" not in res else []
         if not isinstance(history, list):
@@ -79,7 +80,7 @@ class BaseAgent:
         corrections: list[str] | None = None,
         beliefs: list[str] | None = None,
     ) -> None:
-        # 1. Append to our own rolling log so nothing is lost.
+        """Append to rolling log (KV only). Session record is committed once at end of run."""
         await self._append_log({
             "summary": summary,
             "outcome": outcome,
@@ -88,16 +89,38 @@ class BaseAgent:
             "userCorrections": corrections or [],
             "beliefUpdates": beliefs or [],
         })
-        # 2. Mirror into the shared session record (last writer wins).
+
+    async def _collect_for_commit(self) -> dict[str, Any]:
+        """Collect accumulated decisions/errors/beliefs from rolling log for final commit."""
+        res = await self.memory.get_key(self._log_key())
+        history = res.get("value") if "error" not in res else []
+        if not isinstance(history, list):
+            history = []
+        decisions = [d for e in history for d in e.get("decisions", [])]
+        errors = [e for entry in history for e in entry.get("errors", [])]
+        beliefs = [b for entry in history for b in entry.get("beliefUpdates", [])]
+        last = history[-1] if history else {}
+        return {
+            "task_summary": last.get("summary", "agent run"),
+            "outcome": last.get("outcome", "success"),
+            "decisions": decisions,
+            "errors": errors,
+            "user_corrections": [c for entry in history for c in entry.get("userCorrections", [])],
+            "belief_updates": beliefs,
+        }
+
+    async def _finalize_commit(self) -> None:
+        """Commit consolidated session record at end of agent run."""
+        data = await self._collect_for_commit()
         await self.memory.commit_session(
             session_id=self.session_id,
             agent_id=self.agent_id,
-            task_summary=summary,
-            outcome=outcome,
-            decisions=decisions,
-            errors=errors,
-            user_corrections=corrections,
-            belief_updates=beliefs,
+            task_summary=data["task_summary"],
+            outcome=data["outcome"],
+            decisions=data["decisions"],
+            errors=data["errors"],
+            user_corrections=data["user_corrections"],
+            belief_updates=data["belief_updates"],
         )
 
     async def save_state(self, key: str, value: Any,
@@ -144,6 +167,7 @@ class AnalystAgent(BaseAgent):
             decisions=[decision],
             beliefs=["Auth service needs a circuit breaker"],
         )
+        await self._finalize_commit()
         return AgentResult(
             success=True,
             output=findings,
@@ -170,6 +194,7 @@ class DeveloperAgent(BaseAgent):
             decisions=[decision],
             beliefs=["Middleware pattern works for auth"],
         )
+        await self._finalize_commit()
         return AgentResult(
             success=True,
             output=output,
@@ -192,6 +217,7 @@ class TesterAgent(BaseAgent):
 
         await self.save_state("test_result", output)
         await self.log(f"Tests done: {task}", decisions=[decision])
+        await self._finalize_commit()
         return AgentResult(success=True, output=output, decisions=[decision])
 
 
@@ -213,6 +239,7 @@ class ReviewerAgent(BaseAgent):
             decisions=[decision],
             beliefs=["Team conventions are consistent"],
         )
+        await self._finalize_commit()
         return AgentResult(
             success=True,
             output=output,

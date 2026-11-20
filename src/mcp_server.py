@@ -3,6 +3,7 @@ MCP Shared-Memory Server
 Expose tools: commit_session, get_session, list_sessions, set_key, get_key, del_key
 Plus admin tools: health, stats, keys, flush, export, import
 """
+import hmac
 import json
 import os
 from datetime import UTC, datetime
@@ -66,13 +67,29 @@ class RedisClient:
     def session_key(self, session_id: str) -> str:
         return f"session:{session_id}"
 
+    async def scan_keys(self, pattern: str) -> list[str]:
+        """Non-blocking SCAN iteration instead of KEYS."""
+        client = await self.connect()
+        keys = []
+        cursor = 0
+        while True:
+            cursor, batch = await client.scan(cursor, match=pattern, count=1000)
+            keys.extend(batch)
+            if cursor == 0:
+                break
+        return keys
+
 rc = RedisClient(REDIS_URL)
 
 # ---- Auth Helper ----
 def verify_api_key(api_key: str, require_admin: bool = False) -> bool:
+    """Timing-safe API key verification using hmac.compare_digest."""
+    if not api_key:
+        return False
     if require_admin:
-        return api_key == ADMIN_API_KEY
-    return api_key == MCP_API_KEY or api_key == ADMIN_API_KEY
+        return hmac.compare_digest(api_key, ADMIN_API_KEY or "")
+    return (hmac.compare_digest(api_key, MCP_API_KEY or "") or
+            hmac.compare_digest(api_key, ADMIN_API_KEY or ""))
 
 # ---- MCP Server ----
 mcp = FastMCP("shared-memory")
@@ -107,8 +124,7 @@ async def list_sessions(api_key: str = "") -> dict:
     """List all session IDs."""
     if not verify_api_key(api_key):
         return {"error": "unauthorized"}
-    client = await rc.connect()
-    keys = await client.keys("session:*")
+    keys = await rc.scan_keys("session:*")
     sessions = [k.replace("session:", "") for k in keys]
     return {"sessions": sessions, "count": len(sessions)}
 
@@ -226,8 +242,7 @@ async def admin_keys(pattern: str = "session:*", api_key: str = "") -> dict:
     """List key by pattern."""
     if not verify_api_key(api_key, require_admin=True):
         return {"error": "admin unauthorized"}
-    client = await rc.connect()
-    keys = await client.keys(pattern)
+    keys = await rc.scan_keys(pattern)
     return {"pattern": pattern, "count": len(keys), "keys": keys}
 
 @mcp.tool()
@@ -235,9 +250,9 @@ async def admin_del_keys(pattern: str = "session:*", api_key: str = "") -> dict:
     """Hapus key by pattern."""
     if not verify_api_key(api_key, require_admin=True):
         return {"error": "admin unauthorized"}
-    client = await rc.connect()
-    keys = await client.keys(pattern)
+    keys = await rc.scan_keys(pattern)
     if keys:
+        client = await rc.connect()
         await client.delete(*keys)
     return {"deleted": len(keys), "keys": keys}
 
@@ -288,6 +303,7 @@ class XApiKeyMiddleware:
     """
 
     WRAPPED_TOOLS = ("set_key", "commit_session")
+    MAX_BODY_SIZE = 1024 * 1024  # 1 MB limit
 
     def __init__(self, app):
         self.app = app
@@ -309,7 +325,21 @@ class XApiKeyMiddleware:
             message = await receive()
             if message["type"] != "http.request":
                 break
-            body += message.get("body", b"")
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > self.MAX_BODY_SIZE:
+                # Too large - reject early
+                response = json.dumps({"error": "request too large"}).encode("utf-8")
+                await send({
+                    "type": "http.response.start",
+                    "status": 413,
+                    "headers": [(b"content-type", b"application/json")],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": response,
+                })
+                return
+            body += chunk
             more_body = message.get("more_body", False)
 
         try:
@@ -323,7 +353,9 @@ class XApiKeyMiddleware:
                 tool_name = params.get("name", "")
                 arguments = params.get("arguments")
                 if isinstance(arguments, dict):
-                    api_key = arguments.pop("api_key", None) or key
+                    # Don't mutate original - create a copy
+                    arguments = dict(arguments)
+                    api_key = arguments.get("api_key") or key
                     # Normalize argument shape
                     if tool_name in self.WRAPPED_TOOLS:
                         if "params" not in arguments:
@@ -367,7 +399,7 @@ if __name__ == "__main__":
         info = await client.info("memory")
         used_mem = info.get("used_memory", 0) if isinstance(info, dict) else 0
         total_keys = await client.dbsize()
-        sessions = await client.keys("session:*")
+        sessions = await rc.scan_keys("session:*")
 
         lines = [METRICS_HELP]
         for tool, count in tool_calls.items():
