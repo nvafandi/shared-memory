@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Orchestrator — coordinates a multi-agent workflow and records everything
 in MCP Shared-Memory.

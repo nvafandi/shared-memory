@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Visual demo of how shared-memory stores data during an orchestration.
 
 Runs offline (fake client), then dumps every key and record so you can see

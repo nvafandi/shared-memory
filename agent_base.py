@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Agent implementations backed by MCP Shared-Memory.
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Offline test: exercises orchestrator + agents against a fake MemoryClient.
 
 No network / server required.
