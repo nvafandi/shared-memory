@@ -43,11 +43,21 @@ VPS (memory.example.com)
 ├── Dockerfile
 ├── requirements.txt
 ├── src/
-│   ├── mcp_server.py      # MCP Server (FastMCP) - exposes tools to clients
-│   ├── redis_client.py    # Internal Redis client
-│   └── models.py          # Pydantic models
+│   └── mcp_server.py      # MCP Server (FastMCP) - exposes tools to clients
 ├── nginx/
 │   └── shared-memory.conf
+├── ops/
+│   ├── sm_watchdog.sh
+│   ├── sm_watchdog.service
+│   └── sm_watchdog.timer
+├── memory_client.py       # Shared MCP client (used by orchestrator + agents)
+├── orchestrator.py        # Multi-agent pipeline coordinator
+├── agent_base.py          # BaseAgent + analyst/developer/tester/reviewer
+├── client_example.py      # Minimal client example
+├── test_remote_client.py  # Live server smoke test
+├── test_orchestrator_offline.py  # Offline pipeline test (no server)
+├── deploy_vps.sh
+├── run_local.ps1
 └── README.md
 ```
 
@@ -931,7 +941,108 @@ Agents use shared memory for:
 - **Global KV** — `set_key`/`get_key` for config, feature flags, cached data.
 - **TTL cache** — Short-lived values (e.g., rate-limit tokens, API responses).
 
-### Example: Orchestrator saves decision
+### 10.1 Orchestrator (`orchestrator.py`)
+
+High-level workflow coordinator. Runs a multi-agent pipeline and persists a full audit trail to shared memory.
+
+```bash
+# Run a task through the full agent pipeline
+export MCP_SERVER_URL=https://memory.example.com
+export MCP_API_KEY=<your-key>
+python orchestrator.py run "Deploy v2.3 to prod"
+
+# Resume / pin a session ID
+python orchestrator.py run "Fix login bug" --session ses_login_fix
+
+# Log the plan without executing agents
+python orchestrator.py run "Deploy v2.3" --dry-run
+
+# Inspect
+python orchestrator.py list
+python orchestrator.py show ses_login_fix
+
+# Export everything (requires ADMIN_API_KEY)
+python orchestrator.py export
+```
+
+**Pipeline:** `analyst → developer → tester → reviewer`, stopping at the first failure.
+
+#### How history survives `commit_session` overwrite
+
+The server's `commit_session` **replaces** the whole session record, so naively calling it per agent would erase earlier agents' work. The orchestrator solves this:
+
+| Layer | Key | Purpose |
+|-------|-----|---------|
+| Orchestrator trail | `orch:<session>:log` | Every start / delegate / complete / error / finish event |
+| Per-agent trail | `agent:<agent>:<session>:log` | Each agent's own append-only entries |
+| Consolidated view | `orch:<session>:agents` | Merged, time-sorted trail of all agents |
+| Session record | `session:<session>` | Single record with **all** decisions/errors/beliefs merged |
+
+`write_consolidated()` merges every agent log and writes one session record, so `get_session` returns the complete picture. The final `outcome` is taken from the orchestrator's own `finish` event — never from a stale agent entry.
+
+### 10.2 Shared Client (`memory_client.py`)
+
+Single `MemoryClient` used by both the orchestrator and all agents:
+
+```python
+from memory_client import MemoryClient
+
+async with MemoryClient() as mem:
+    await mem.set_key("config:timeout", 30, ttl_seconds=3600)
+    print(await mem.get_key("config:timeout"))
+
+    await mem.commit_session(
+        session_id="ses_001",
+        agent_id="analyst",
+        task_summary="Analyze auth bug",
+        decisions=[{"summary": "no rate limit", "rationale": "brute force risk"}],
+    )
+    print(await mem.get_session("ses_001"))
+    print(await mem.list_sessions())
+```
+
+It handles the argument-format quirks for you (`params` wrapper for `set_key`/`commit_session`, flat args for the rest) and normalizes results into dicts.
+
+### 10.3 Agent Base (`agent_base.py`)
+
+Reusable base class for all agents. Provides:
+- `log()` — appends to the agent's rolling log **and** mirrors into the session record
+- `save_state()` / `load_state()` — per-agent, per-session KV (`agent:<id>:<session>:<key>`)
+- Built-in subclasses: `AnalystAgent`, `DeveloperAgent`, `TesterAgent`, `ReviewerAgent`
+
+```python
+# Run a single agent directly
+python agent_base.py analyst ses_001 "Analyze auth bug"
+```
+
+Add your own agent:
+
+```python
+from agent_base import BaseAgent, AgentResult, AGENT_MAP
+
+class DeployAgent(BaseAgent):
+    agent_id = "deployer"
+
+    async def run(self, task: str) -> AgentResult:
+        await self.log(f"Deploying: {task}")
+        await self.save_state("status", "deployed")
+        await self.log("Deploy complete", beliefs=["Rollback tested"])
+        return AgentResult(True, f"Deployed: {task}")
+
+AGENT_MAP["deployer"] = DeployAgent
+```
+
+### 10.4 Offline Test
+
+`test_orchestrator_offline.py` runs the whole pipeline against a fake in-memory client — no server needed:
+
+```bash
+python test_orchestrator_offline.py
+```
+
+It asserts the rolling logs exist, all four agents run in order, the pipeline halts on failure, dry-run does not delegate, and — importantly — **no agent decisions are lost to `commit_session` overwrites**.
+
+### 10.5 Example: Orchestrator saves decision
 
 ```python
 await client.call_tool("commit_session", {
@@ -951,7 +1062,7 @@ await client.call_tool("commit_session", {
 })
 ```
 
-### Example: Developer reads config
+### 10.6 Example: Developer reads config
 
 ```python
 timeout = await client.call_tool("get_key", {
