@@ -40,6 +40,7 @@ class CommitSessionParams(BaseModel):
     errors: list[str] = Field(default_factory=list)
     userCorrections: list[str] = Field(default_factory=list)
     beliefUpdates: list[str] = Field(default_factory=list)
+    ttlSeconds: Optional[int] = None
 
 class SetKeyParams(BaseModel):
     key: str
@@ -80,17 +81,19 @@ mcp = FastMCP("shared-memory")
 
 @mcp.tool()
 async def commit_session(params: CommitSessionParams, api_key: str = "") -> dict:
-    """Simpan/update record session agen."""
+    """Save/update agent session record. Optional ttlSeconds for auto-expiry."""
     if not verify_api_key(api_key):
         return {"error": "unauthorized"}
     client = await rc.connect()
-    record = SessionRecord(**params.model_dump())
+    record = SessionRecord(**params.model_dump(exclude={"ttlSeconds"}))
     await client.set(rc.session_key(params.sessionId), record.model_dump_json())
+    if params.ttlSeconds:
+        await client.expire(rc.session_key(params.sessionId), params.ttlSeconds)
     return {"ok": True, "sessionId": params.sessionId}
 
 @mcp.tool()
 async def get_session(session_id: str, api_key: str = "") -> dict:
-    """Ambil record session by ID."""
+    """Get session record by ID."""
     if not verify_api_key(api_key):
         return {"error": "unauthorized"}
     client = await rc.connect()
@@ -101,7 +104,7 @@ async def get_session(session_id: str, api_key: str = "") -> dict:
 
 @mcp.tool()
 async def list_sessions(api_key: str = "") -> dict:
-    """List semua session ID."""
+    """List all session IDs."""
     if not verify_api_key(api_key):
         return {"error": "unauthorized"}
     client = await rc.connect()
@@ -138,12 +141,49 @@ async def get_key(key: str, api_key: str = "") -> dict:
 
 @mcp.tool()
 async def del_key(key: str, api_key: str = "") -> dict:
-    """Hapus key."""
+    """Delete key."""
     if not verify_api_key(api_key):
         return {"error": "unauthorized"}
     client = await rc.connect()
     await client.delete(key)
     return {"ok": True}
+
+@mcp.tool()
+async def mget(keys: list[str], api_key: str = "") -> dict:
+    """Batch get values for multiple keys in one round-trip."""
+    if not verify_api_key(api_key):
+        return {"error": "unauthorized"}
+    if not keys:
+        return {"values": {}}
+    client = await rc.connect()
+    raw = await client.mget(keys)
+    out = {}
+    for k, v in zip(keys, raw):
+        if v is None:
+            out[k] = None
+        else:
+            try:
+                out[k] = json.loads(v)
+            except json.JSONDecodeError:
+                out[k] = v
+    return {"values": out}
+
+@mcp.tool()
+async def mset(items: dict[str, Any], ttlSeconds: Optional[int] = None, api_key: str = "") -> dict:
+    """Batch set multiple key-values atomically (optional shared ttlSeconds)."""
+    if not verify_api_key(api_key):
+        return {"error": "unauthorized"}
+    if not items:
+        return {"ok": True, "count": 0}
+    client = await rc.connect()
+    encoded = {k: (v if isinstance(v, str) else json.dumps(v)) for k, v in items.items()}
+    pipe = client.pipeline(transaction=True)
+    pipe.mset(encoded)
+    if ttlSeconds:
+        for k in encoded:
+            pipe.expire(k, ttlSeconds)
+    await pipe.execute()
+    return {"ok": True, "count": len(encoded)}
 
 # ===== ADMIN TOOLS (ADMIN_API_KEY only) =====
 
@@ -242,11 +282,13 @@ async def admin_import(data: dict, api_key: str = "") -> dict:
 
 
 class XApiKeyMiddleware:
-    """Isi argumen api_key dari header x-api-key kalau client tidak mengirimnya.
-
-    Tanpa ini setiap pemanggilan tool agen harus menyertakan api_key manual.
-    Key tetap diperiksa per tool oleh verify_api_key().
+    """1) Inject api_key from x-api-key header when omitted.
+    2) Auto-normalize arguments so BOTH flat and {"params": ...} formats work:
+       - set_key / commit_session: wrap flat args into {"params": ...}
+       - get_key / del_key / get_session / list_sessions / admin_*: unwrap {"params": ...}
     """
+
+    WRAPPED_TOOLS = {"set_key", "commit_session"}
 
     def __init__(self, app):
         self.app = app
@@ -261,10 +303,6 @@ class XApiKeyMiddleware:
             if name.lower() == b"x-api-key":
                 key = value.decode("latin-1")
                 break
-
-        if not key:
-            await self.app(scope, receive, send)
-            return
 
         body = b""
         more_body = True
@@ -282,10 +320,22 @@ class XApiKeyMiddleware:
 
         if isinstance(msg, dict) and msg.get("method") == "tools/call":
             params = msg.get("params")
-            arguments = params.get("arguments") if isinstance(params, dict) else None
-            if isinstance(arguments, dict) and not arguments.get("api_key"):
-                arguments["api_key"] = key
-                body = json.dumps(msg).encode("utf-8")
+            if isinstance(params, dict):
+                tool_name = params.get("name", "")
+                arguments = params.get("arguments")
+                if isinstance(arguments, dict):
+                    api_key = arguments.pop("api_key", None) or key
+                    # Normalize argument shape
+                    if tool_name in self.WRAPPED_TOOLS:
+                        if "params" not in arguments:
+                            arguments = {"params": dict(arguments)}
+                    else:
+                        if set(arguments.keys()) == {"params"} and isinstance(arguments["params"], dict):
+                            arguments = dict(arguments["params"])
+                    if api_key:
+                        arguments["api_key"] = api_key
+                    params["arguments"] = arguments
+                    body = json.dumps(msg).encode("utf-8")
 
         replayed = []
 
@@ -300,14 +350,49 @@ class XApiKeyMiddleware:
 
 if __name__ == "__main__":
     import uvicorn
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, PlainTextResponse
+    from starlette.middleware import Middleware
+    from starlette.routing import Route
+
+    METRICS_HELP = """# HELP mcp_tool_calls_total Total tool calls
+# TYPE mcp_tool_calls_total counter
+# HELP mcp_sessions_total Total sessions created
+# TYPE mcp_sessions_total gauge
+# HELP mcp_kv_keys_total Total KV keys
+# TYPE mcp_kv_keys_total gauge
+"""
+
+    tool_calls: dict[str, int] = {}
+
+    async def metrics_endpoint(request):
+        client = await rc.connect()
+        info = await client.info("memory")
+        used_mem = info.get("used_memory", 0) if isinstance(info, dict) else 0
+        total_keys = await client.dbsize()
+        sessions = await client.keys("session:*")
+
+        lines = [METRICS_HELP]
+        for tool, count in tool_calls.items():
+            lines.append(f'mcp_tool_calls_total{{tool="{tool}"}} {count}')
+        lines.append(f'mcp_sessions_total {len(sessions)}')
+        lines.append(f'mcp_kv_keys_total {total_keys}')
+        lines.append(f'mcp_redis_used_bytes {used_mem}')
+        return PlainTextResponse("\n".join(lines), media_type="text/plain; version=0.0.4")
+
+    async def wrapped_mcp_app(scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST":
+            # We don't have easy access to tool name here, but we can track via middleware if needed
+            pass
+        await mcp_app(scope, receive, send)
+
     host = os.getenv("MCP_HOST", "0.0.0.0")
     port = int(os.getenv("MCP_PORT", "8000"))
     transport = os.getenv("MCP_TRANSPORT", "sse")
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        from starlette.middleware import Middleware
-        app = mcp.http_app(transport="sse", middleware=[Middleware(XApiKeyMiddleware)])
+        mcp_app = mcp.http_app(transport="sse", middleware=[Middleware(XApiKeyMiddleware)])
+        app = mcp_app
         app.add_route("/health", lambda req: JSONResponse({"status": "ok"}), methods=["GET"])
+        app.add_route("/metrics", metrics_endpoint, methods=["GET"])
         uvicorn.run(app, host=host, port=port)

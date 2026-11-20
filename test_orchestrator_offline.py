@@ -33,7 +33,7 @@ class FakeMemoryClient:
 
     async def commit_session(self, session_id, agent_id, task_summary, outcome="success",
                              decisions=None, errors=None, user_corrections=None,
-                             belief_updates=None):
+                             belief_updates=None, ttl_seconds=None):
         self.calls.append(f"commit_session:{session_id}")
         self.sessions[session_id] = {
             "sessionId": session_id,
@@ -67,6 +67,13 @@ class FakeMemoryClient:
     async def del_key(self, key):
         self.store.pop(key, None)
         return {"ok": True}
+
+    async def mget(self, keys):
+        return {"values": {k: self.store.get(k) for k in keys}}
+
+    async def mset(self, items, ttl_seconds=None):
+        self.store.update(items)
+        return {"ok": True, "count": len(items)}
 
     async def admin_export(self):
         return {"exported": len(self.sessions), "data": self.sessions}
@@ -162,6 +169,35 @@ async def main() -> int:
     log3 = fake.store[f"orch:{sid3}:log"]
     assert not any(e["kind"] == "delegate" for e in log3), "dry run delegated"
     print("OK  dry-run does not delegate")
+
+    # 8. Batch KV operations (mget/mset)
+    fake2 = FakeMemoryClient()
+    memory_client.MemoryClient = lambda *a, **kw: fake2
+    agent_base.MemoryClient = lambda *a, **kw: fake2
+
+    async with memory_client.MemoryClient() as mem:
+        await mem.mset({"batch:k1": "v1", "batch:k2": 42, "batch:k3": {"a": 1}})
+        res = await mem.mget(["batch:k1", "batch:k2", "batch:k3", "batch:missing"])
+        assert res["values"]["batch:k1"] == "v1"
+        assert res["values"]["batch:k2"] == 42
+        assert res["values"]["batch:k3"] == {"a": 1}
+        assert res["values"]["batch:missing"] is None
+    print("OK  mget/mset batch KV works")
+
+    # 9. Session TTL auto-expiry simulation
+    fake3 = FakeMemoryClient()
+    memory_client.MemoryClient = lambda *a, **kw: fake3
+    memory_client.MemoryClient = lambda *a, **kw: fake3
+    async with memory_client.MemoryClient() as mem:
+        await mem.commit_session(
+            session_id="ttl-session",
+            agent_id="tester",
+            task_summary="TTL test",
+            ttl_seconds=1,  # very short TTL
+        )
+        rec = await mem.get_session("ttl-session")
+        assert rec["sessionId"] == "ttl-session"
+    print("OK  commit_session accepts ttl_seconds parameter")
 
     print("\nALL TESTS PASSED")
     return 0 if ok else 1

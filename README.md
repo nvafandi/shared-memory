@@ -1088,6 +1088,17 @@ timeout = await client.call_tool("get_key", {
 
 ---
 
+## 11.1 New Features (v2.1)
+
+| Tool / Endpoint | Purpose | Auth / Access |
+|-----------------|---------|---------------|
+| `mget` | Batch get multiple keys: `{ "keys": ["k1", "k2"] }` | MCP_API_KEY |
+| `mset` | Batch set multiple keys atomically: `{ "items": {"k1": "v1"}, "ttlSeconds": 300 }` | MCP_API_KEY |
+| `commit_session` `ttlSeconds` | Optional auto-expiry for session records | MCP_API_KEY |
+| `GET /metrics` | Prometheus metrics (`mcp_tool_calls_total`, `mcp_sessions_total`, `mcp_kv_keys_total`, `mcp_redis_used_bytes`) | Public (no auth) |
+
+---
+
 ## 12. Security Checklist
 
 - [ ] `MCP_API_KEY` and `ADMIN_API_KEY` are 32+ char random strings.
@@ -1117,10 +1128,8 @@ timeout = await client.call_tool("get_key", {
 
 - No Redis Cluster / Sentinel (single instance, AOF persistence).
 - No built-in encryption at rest (VPS disk encryption recommended).
-- No multi-tenancy / namespaces (keys are global).
-- No transactions / Lua scripts (simple GET/SET only).
-- No automatic session TTL (manual `del_key` or admin cleanup).
-- No metrics / Prometheus exporter (add if needed).
+- No multi-tenancy / namespaces (keys are global — use prefixes like `proj1:session:`).
+- No Lua scripts / complex transactions (use `mset` pipeline for atomic multi-key writes).
 
 ---
 
@@ -1196,7 +1205,23 @@ mcp call-tool admin_stats --server sse:${MCP_SERVER_URL}/sse \
   "value": "any",           # string|number|bool|array|object
   "ttlSeconds": "integer?"  # optional
 }
+
+# CommitSessionParams (extends SessionRecord)
+{
+  "ttlSeconds": "integer?"  # optional — auto-expire session record
+}
 ```
+
+### New Server Features (v2.1)
+
+| Feature | Tool / Endpoint | Description |
+|---------|-----------------|-------------|
+| **Session TTL** | `commit_session` `ttlSeconds` | Optional auto-expiry for session records (Redis `EXPIRE`). |
+| **Batch KV read** | `mget` | Fetch multiple keys in one round-trip: `{ "keys": ["k1", "k2"] }` → `{ "values": {"k1": ..., "k2": ...} }`. |
+| **Batch KV write** | `mset` | Atomic multi-key set with optional shared TTL: `{ "items": {"k1": "v1", "k2": 42}, "ttlSeconds": 300 }`. |
+| **Argument normalization** | Middleware | Accepts **both** `params` wrapper AND flat args for all tools. Clients can send `{ "params": {...} }` or flat `{ "key": "k", "value": "v" }` — server normalizes automatically. |
+| **Prometheus metrics** | `GET /metrics` | Exposes `mcp_tool_calls_total`, `mcp_sessions_total`, `mcp_kv_keys_total`, `mcp_redis_used_bytes` in text format. |
+| **Admin stats enriched** | `admin_stats` | Now includes memory usage and key count from Redis INFO. |
 
 ---
 

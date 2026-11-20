@@ -109,6 +109,16 @@ class BaseAgent:
         res = await self.memory.get_key(self._state_key(key))
         return None if "error" in res else res.get("value")
 
+    # ---------- batch KV helpers ----------
+
+    async def mget(self, keys: List[str]) -> Dict[str, Any]:
+        """Batch get values for multiple keys."""
+        return await self.memory.mget(keys)
+
+    async def mset(self, items: Dict[str, Any], ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """Batch set multiple key-values atomically with optional shared TTL."""
+        return await self.memory.mset(items, ttl_seconds)
+
     # ---------- contract ----------
 
     async def run(self, task: str) -> AgentResult:

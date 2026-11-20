@@ -91,9 +91,10 @@ class MemoryClient:
         errors: Optional[List[str]] = None,
         user_corrections: Optional[List[str]] = None,
         belief_updates: Optional[List[str]] = None,
+        ttl_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Overwrites the session record (server-side behavior)."""
-        return await self._call("commit_session", {
+        """Overwrites the session record (server-side behavior). Optional ttl_seconds for auto-expiry."""
+        args = {
             "params": {
                 "sessionId": session_id,
                 "agentId": agent_id,
@@ -104,7 +105,10 @@ class MemoryClient:
                 "userCorrections": user_corrections or [],
                 "beliefUpdates": belief_updates or [],
             }
-        })
+        }
+        if ttl_seconds:
+            args["params"]["ttlSeconds"] = ttl_seconds
+        return await self._call("commit_session", args)
 
     async def get_session(self, session_id: str) -> Dict[str, Any]:
         return await self._call("get_session", {"session_id": session_id})
@@ -126,6 +130,17 @@ class MemoryClient:
 
     async def del_key(self, key: str) -> Dict[str, Any]:
         return await self._call("del_key", {"key": key})
+
+    async def mget(self, keys: List[str]) -> Dict[str, Any]:
+        """Batch get values for multiple keys."""
+        return await self._call("mget", {"keys": keys})
+
+    async def mset(self, items: Dict[str, Any], ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """Batch set multiple key-values atomically with optional shared TTL."""
+        args = {"items": items}
+        if ttl_seconds:
+            args["ttlSeconds"] = ttl_seconds
+        return await self._call("mset", args)
 
     # ---------- Admin tools ----------
 
