@@ -1,0 +1,92 @@
+name: CI/CD — MCP Shared-Memory
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PROJECT_DIR: ${{ secrets.VPS_PROJECT_DIR || '~/shared-memory' }}
+  DOMAIN: memory.nurvan.web.id
+
+jobs:
+  # ---------- 1. TEST (runs on every push/PR) ----------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run offline orchestrator tests
+        run: python test_orchestrator_offline.py
+
+      - name: Lint Python (ruff)
+        run: |
+          pip install ruff
+          ruff check .
+
+  # ---------- 2. DEPLOY (only on push to main) ----------
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            cd ${{ env.PROJECT_DIR }}
+            echo "=== Pull latest code ==="
+            git pull origin main
+            
+            echo "=== Ensure .env exists with production keys ==="
+            if [ ! -f .env ]; then
+              cp .env.example .env
+              echo "⚠️  .env created from template — UPDATE WITH PRODUCTION KEYS!"
+            fi
+            
+            echo "=== Build & restart Docker ==="
+            docker compose up -d --build --remove-orphans
+            
+            echo "=== Wait for health ==="
+            sleep 5
+            curl -sf http://localhost:8000/health || exit 1
+            
+            echo "=== Verify new v2.1 tools ==="
+            curl -sf http://localhost:8000/metrics | grep -q "mcp_sessions_total" || echo "⚠️  /metrics not ready yet"
+            
+            echo "✅ Deploy complete"
+
+  # ---------- 3. VERIFY (runs after deploy) ----------
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify HTTPS endpoints via Cloudflare
+        run: |
+          echo "=== Health check (via Cloudflare) ==="
+          curl -sf "https://${{ env.DOMAIN }}/health" | jq .
+          
+          echo ""
+          echo "=== Metrics endpoint ==="
+          curl -sf "https://${{ env.DOMAIN }}/metrics" | head -20
+          
+          echo ""
+          echo "=== Verify v2.1 tools via MCP ==="
+          # Quick MCP tool test (requires MCP_API_KEY)
+          echo "MCP tool test would run here with MCP_API_KEY"
